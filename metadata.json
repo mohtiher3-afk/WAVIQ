@@ -1,0 +1,6 @@
+{
+  "name": "WAVIQ",
+  "description": "Unified 2-tab offline AI audio mastering studio with 64-bit DSP, 192kHz SBR high-frequency restoration, 3-band True-Peak limiting, bilingual local AI controls, and Nothing OS Glyph telemetry.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

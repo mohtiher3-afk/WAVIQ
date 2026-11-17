@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">WAVIQ</string>
+    <string name="studio_brand">WAVIQ — Autonomous Audio Intelligence</string>
+    <string name="dev_map_label">DEV MAP</string>
+    <string name="tab_analyze">ANALYZE</string>
+    <string name="tab_enhance">ENHANCE</string>
+    <string name="tab_studio">STUDIO</string>
+    <string name="tab_library">LIBRARY</string>
+    <string name="import_audio_cta">IMPORT LOCAL AUDIO</string>
+    <string name="load_reference_cta">LOAD STUDIO REF</string>
+    <string name="simulate_dispatch">SIMULATE DISPATCH</string>
+    <string name="copy_ts_type">COPY TS TYPE</string>
+</resources>
