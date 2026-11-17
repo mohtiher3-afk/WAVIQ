@@ -296,6 +296,8 @@ fun WaviqApp(viewModel: WaviqViewModel = viewModel()) {
                                     onApplyMasteringPreset = { viewModel.applyMasteringPreset(it) },
                                     onRerunStartupGuard = { viewModel.rerunStartupGuard() },
                                     onDismissStartupBanner = { viewModel.dismissStartupFallbackBanner() },
+                                    onCancelProcessing = { viewModel.cancelProcessing() },
+                                    onClearFileError = { viewModel.clearFileError() },
                                     scrollState = studioScrollState
                                 )
                             }
@@ -328,6 +330,8 @@ fun WaviqApp(viewModel: WaviqViewModel = viewModel()) {
                                     onToggleAb = { viewModel.toggleAbEnhanced(it) },
                                     onLoadSavedMaster = { viewModel.loadSavedMasterForPlayback(it) },
                                     onDeleteSavedMaster = { viewModel.deleteSavedMaster(it) },
+                                    onCancelExport = { viewModel.cancelExportMaster() },
+                                    onGoToStudioClick = { navigateToTab(WaviqTab.STUDIO) },
                                     scrollState = libraryScrollState
                                 )
                             }

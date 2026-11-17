@@ -39,7 +39,7 @@ object DevMapSchemas {
          │                                    │             │   │          │
          └────────────────────────────────────┼─────────────┘   │          ▼
                                      ┌────────┴────────┐        │ ┌─────────────────┐
-                                     │ #10 4-WAY STEMS │◄───────┼─┤ #07 TACTILE DECK│
+                                     │ #10 BAND MIXER  │◄───────┼─┤ #07 TACTILE DECK│
                                      │ /studio/stems   │        │ │ /enhance/deck   │
                                      └────────▲────────┘        │ └────────┬────────┘
                                               │                 │          │
@@ -149,16 +149,16 @@ export interface Route09ProSuitePayload {
   headroomMarginDb: number;
 }"""
 
-    const val SCHEMA_10 = """// RoutePayloadSchema.ts — #10 4-Way Stem Separation
-export interface Route10StemsPayload {
+    const val SCHEMA_10 = """// RoutePayloadSchema.ts — #10 Frequency-Band Crossover Mixer
+export interface Route10BandMixerPayload {
   routeId: '#10';
   path: '/studio/stems';
   busMode: 'STEM_MATRIX_4X';
-  stems: {
-    vocals: { gain: number; mute: boolean; solo: boolean };
-    drums: { gain: number; mute: boolean; solo: boolean };
-    bass: { gain: number; mute: boolean; solo: boolean };
-    other: { gain: number; mute: boolean; solo: boolean };
+  bands: {
+    mid: { gain: number; mute: boolean; solo: boolean };
+    transients: { gain: number; mute: boolean; solo: boolean };
+    sub: { gain: number; mute: boolean; solo: boolean };
+    air: { gain: number; mute: boolean; solo: boolean };
   };
 }"""
 

@@ -200,8 +200,8 @@ object WaviqRouteRegistry {
         WaviqRouteSpec(
             id = 10,
             code = "#10",
-            title = "4-Way Stem Separation",
-            shortTitle = "4-STEMS",
+            title = "Frequency-Band Crossover Mixer",
+            shortTitle = "BAND MIXER",
             path = "/studio/stems",
             tab = WaviqTab.STUDIO,
             busStatus = "RUNNING (96kHz 4X-BUS)",
@@ -211,7 +211,7 @@ object WaviqRouteRegistry {
             outboundSuccess = "Route #11 (/studio/bypass)",
             alternateBypass = "Route #13 (/library/transcode)",
             hapticProfile = "11ms solo/mute latch click",
-            glyphZoneAssignment = "ZONE_4X: Vocals/Drums/Bass/Other",
+            glyphZoneAssignment = "ZONE_4X: Mid/Transients/Sub/Air",
             peakRamBudget = "164 MB / < 180 MB",
             npuStatus = "AIR-GAPPED // CROSSOVER_4X",
             tsSchema = DevMapSchemas.SCHEMA_10

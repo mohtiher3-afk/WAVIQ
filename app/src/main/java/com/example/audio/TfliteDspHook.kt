@@ -23,7 +23,7 @@ class TfliteDspHook(
     override val id: String = "tflite_ai_master",
     override val name: String = "On-Device TFLite AI Denoise & Master",
     override var isEnabled: Boolean = true
-) : DspHook, AutoCloseable {
+) : Dsp64Stage, AutoCloseable {
 
     override val baselineLatencyMs: Float
         get() = if (runtimeMode == "LITERT_COMPILED") 0.85f else 0.42f
@@ -35,6 +35,7 @@ class TfliteDspHook(
     private var outputBuffers: List<TensorBuffer> = emptyList()
 
     private val featureArray = FloatArray(4)
+    private val scratch64 = ScratchStereo64()
     private var smoothNoiseGate = 1.0f
     private var smoothDynGain = 1.0f
 
@@ -87,9 +88,9 @@ class TfliteDspHook(
         }
     }
 
-    override fun processBlock(
-        left: FloatArray,
-        right: FloatArray,
+    override fun processDoubleBlock(
+        left: DoubleArray,
+        right: DoubleArray,
         frameCount: Int,
         sampleRate: Int
     ) {
@@ -97,19 +98,19 @@ class TfliteDspHook(
         ensureInitializedOnBackgroundThread()
 
         // Extract compact block telemetry features [rms, peak, zcrNoise, hfEnergy]
-        var sumSq = 0f
-        var peak = 0f
+        var sumSq = 0.0
+        var peak = 0.0
         var zeroCrossings = 0
-        var hfDiffSum = 0f
-        var prevMid = 0f
+        var hfDiffSum = 0.0
+        var prevMid = 0.0
 
         for (i in 0 until frameCount) {
-            val mid = 0.5f * (left[i] + right[i])
+            val mid = 0.5 * (left[i] + right[i])
             sumSq += mid * mid
             val a = abs(mid)
             if (a > peak) peak = a
             if (i > 0) {
-                if ((mid >= 0f && prevMid < 0f) || (mid < 0f && prevMid >= 0f)) {
+                if ((mid >= 0.0 && prevMid < 0.0) || (mid < 0.0 && prevMid >= 0.0)) {
                     zeroCrossings++
                 }
                 hfDiffSum += abs(mid - prevMid)
@@ -117,41 +118,50 @@ class TfliteDspHook(
             prevMid = mid
         }
 
-        val rms = sqrt((sumSq / frameCount).coerceAtLeast(1e-12f)).coerceIn(0f, 1f)
+        val rms = sqrt((sumSq / frameCount).coerceAtLeast(1e-12)).toFloat().coerceIn(0f, 1f)
+        val peakF = peak.toFloat().coerceIn(0f, 1f)
         val zcr = (zeroCrossings.toFloat() / frameCount).coerceIn(0f, 1f)
-        val hfEnergy = (hfDiffSum / frameCount).coerceIn(0f, 1f)
+        val hfEnergy = (hfDiffSum / frameCount).toFloat().coerceIn(0f, 1f)
 
-        val (targetDenoiseStrength, targetDynGain) = runInference(rms, peak, zcr, hfEnergy)
+        val (targetDenoiseStrength, targetDynGain) = runInference(rms, peakF, zcr, hfEnergy)
 
         // Smooth block-to-block parameter trajectories to prevent pumping
         smoothNoiseGate = smoothNoiseGate * 0.75f + targetDenoiseStrength * 0.25f
         smoothDynGain = smoothDynGain * 0.80f + targetDynGain * 0.20f
 
-        val noiseFloorThreshold = 0.008f + smoothNoiseGate * 0.020f
-        val gain = smoothDynGain.coerceIn(0.75f, 1.45f)
-        var gateSum = 0f
+        val noiseFloorThreshold = 0.008 + smoothNoiseGate.toDouble() * 0.020
+        val gain = smoothDynGain.toDouble().coerceIn(0.75, 1.45)
+        var gateSum = 0.0
 
         for (i in 0 until frameCount) {
-            var l = left[i]
-            var r = right[i]
-            val env = 0.5f * (abs(l) + abs(r))
-            // Soft downward expander suppresses low-level hiss/noise below threshold
+            val l = left[i]
+            val r = right[i]
+            val env = 0.5 * (abs(l) + abs(r))
             val gateFactor = if (env < noiseFloorThreshold) {
-                val ratio = (env / noiseFloorThreshold).coerceIn(0f, 1f)
-                0.35f + 0.65f * (ratio * ratio)
+                val ratio = (env / noiseFloorThreshold).coerceIn(0.0, 1.0)
+                0.35 + 0.65 * (ratio * ratio)
             } else {
-                1.0f
+                1.0
             }
             gateSum += gateFactor
-            l = tanh(l * gateFactor * gain)
-            r = tanh(r * gateFactor * gain)
-            left[i] = l
-            right[i] = r
+            left[i] = tanh(l * gateFactor * gain)
+            right[i] = tanh(r * gateFactor * gain)
         }
 
-        val avgGateFactor = (gateSum / frameCount).coerceIn(0f, 1f)
-        lastGateReductionPct = ((1f - avgGateFactor) * 100f).coerceIn(0f, 65f)
-        lastDynGainDb = (20f * log10(gain.coerceAtLeast(1e-4f))).coerceIn(-6f, 6f)
+        val avgGateFactor = (gateSum / frameCount).coerceIn(0.0, 1.0)
+        lastGateReductionPct = ((1.0 - avgGateFactor) * 100.0).toFloat().coerceIn(0f, 65f)
+        lastDynGainDb = (20.0 * log10(gain.coerceAtLeast(1e-4))).toFloat().coerceIn(-6f, 6f)
+    }
+
+    override fun processBlock(
+        left: FloatArray,
+        right: FloatArray,
+        frameCount: Int,
+        sampleRate: Int
+    ) {
+        scratch64.processFloatBridge(left, right, frameCount) { l64, r64, n ->
+            processDoubleBlock(l64, r64, n, sampleRate)
+        }
     }
 
     private fun runInference(

@@ -64,6 +64,7 @@ import com.example.model.MusicGenre
 import com.example.model.StartupCheckStatus
 import com.example.model.StartupHealthState
 import com.example.model.WaviqUiState
+import com.example.ui.components.AnalysisTelemetrySection
 import com.example.ui.components.HardwarePanel
 import com.example.ui.components.TelemetryStatTile
 import com.example.ui.components.WaveformScrubBar
@@ -383,7 +384,7 @@ fun Screen01TrackInspector(
             ) {
                 TelemetryStatTile(
                     label = "DETECTED GENRE",
-                    value = "${diag.detectedGenre.title} (${diag.genreConfidencePct}%)",
+                    value = "${diag.detectedGenre.title} (HEURISTIC)",
                     accentColor = genreAccent,
                     modifier = Modifier.weight(1.2f).testTag("smart_genre_tile")
                 )
@@ -422,7 +423,7 @@ fun Screen01TrackInspector(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 TelemetryStatTile(
-                    label = "HF BANDWIDTH",
+                    label = "EST. HF BANDWIDTH",
                     value = String.format(Locale.US, "%.1f kHz (-%d%%)", diag.estimatedBandwidthKhz, diag.hfDeficitPct),
                     accentColor = CyanScope,
                     modifier = Modifier.weight(1.15f)
@@ -458,6 +459,12 @@ fun Screen01TrackInspector(
                     )
                 }
             }
+
+            Spacer(Modifier.height(10.dp))
+            AnalysisTelemetrySection(
+                report = diag.analysisReport,
+                accentColor = genreAccent
+            )
         }
 
         InteractiveSpectralCurve(
@@ -973,6 +980,16 @@ fun Screen04AnalysisReports(
                 label = "HIGH-FREQUENCY BANDWIDTH (${String.format(Locale.US, "%.1f", track.diagnostic.estimatedBandwidthKhz)} kHz)",
                 detail = "${track.diagnostic.hfDeficitPct}% upper-band deficit — Hi-Res upsampler auto-calibrated",
                 passed = track.diagnostic.hfDeficitPct < 50
+            )
+        }
+
+        HardwarePanel(
+            title = "PHASE 2 // TAXONOMY, SPECTRAL & PHASE DIAGNOSTICS",
+            badge = track.diagnostic.analysisReport.primaryStyleLabel.uppercase(Locale.US)
+        ) {
+            AnalysisTelemetrySection(
+                report = track.diagnostic.analysisReport,
+                accentColor = CyanScope
             )
         }
 

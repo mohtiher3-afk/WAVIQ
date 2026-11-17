@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import com.example.audio.BiquadFilter
 import com.example.audio.FilterType
 import com.example.audio.LocalAiMasteringAgent
+import com.example.audio.OnDeviceModelRegistry
 import com.example.model.EnhanceProfile
 import com.example.model.GlyphPatternMode
 import com.example.model.MusicGenre
@@ -81,6 +83,8 @@ import com.example.model.StartupCheckStatus
 import com.example.model.StartupHealthState
 import com.example.model.TactileDeckParams
 import com.example.model.WaviqUiState
+import com.example.ui.components.AnalysisTelemetrySection
+import com.example.ui.components.DecisionExplainabilitySection
 import com.example.ui.components.HardwarePanel
 import com.example.ui.components.InteractiveSpectralCurve
 import com.example.ui.components.TactileRotarySlider
@@ -131,6 +135,8 @@ fun UnifiedStudioScreen(
     onApplyMasteringPreset: (String) -> Unit,
     onRerunStartupGuard: () -> Unit,
     onDismissStartupBanner: () -> Unit,
+    onCancelProcessing: () -> Unit = {},
+    onClearFileError: () -> Unit = {},
     scrollState: ScrollState = rememberScrollState()
 ) {
     val track = state.trackInfo
@@ -284,6 +290,25 @@ fun UnifiedStudioScreen(
 
             Spacer(Modifier.height(14.dp))
 
+            if (track.durationMs <= 0L || track.waveformPeaks.isEmpty()) {
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, HairlineBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("studio_empty_state_banner")
+                ) {
+                    Text(
+                        text = "No active audio stream loaded. Import a file, load bundled studio reference, or record a mic take below.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TechSlate,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
             WaveformScrubBar(
                 peaks = track.waveformPeaks,
                 progressFraction = progress,
@@ -302,20 +327,76 @@ fun UnifiedStudioScreen(
 
             if (state.isLoadingFile) {
                 Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        color = GlyphCrimson,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text("DECODING AUDIO STREAM...", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, CyanScope.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("studio_analyzing_banner")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = GlyphCrimson,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "DECODING & MEASURING BS.1770 / SPECTRAL METRICS...",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SignalWhite
+                        )
+                    }
                 }
             }
 
-            state.fileErrorMessage?.let { err ->
+            if (track.isDurationTruncated) {
                 Spacer(Modifier.height(8.dp))
-                Text(err, style = MaterialTheme.typography.bodyMedium, color = GlyphCrimson)
+                Text(
+                    text = "TRACK TRUNCATED AT DEVICE SAFE MEMORY LIMIT",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PeakAmber
+                )
+            }
+
+            state.fileErrorMessage?.let { err ->
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, GlyphCrimson),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("studio_file_error_banner")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)
+                    ) {
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = GlyphCrimson,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = onClearFileError,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("dismiss_file_error_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Dismiss audio error",
+                                tint = SignalWhite
+                            )
+                        }
+                    }
+                }
             }
 
             AnimatedVisibility(visible = state.micCapture.isRecording) {
@@ -416,16 +497,19 @@ fun UnifiedStudioScreen(
         }
 
         HardwarePanel(
-            title = "LOCAL AI MASTERING ENGINE",
-            badge = "${state.selectedGenre.title} // ${state.aiConfidencePct}%",
+            title = "AUTONOMOUS AUDIO ENGINE",
+            badge = "${if (state.isGenreAutoDetected) "HEURISTIC" else "MANUAL"} // ${state.selectedGenre.title}",
             accentBorder = true,
             modifier = Modifier.testTag("smart_diagnostic_card")
         ) {
-            // Active AI Decision Summary
+            // Active Decision / Guidance Summary
             Surface(
                 color = ConsolePanel,
                 shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, genreAccent.copy(alpha = 0.45f))
+                border = BorderStroke(
+                    1.dp,
+                    if (state.lastCommandUnsupported) PeakAmber else genreAccent.copy(alpha = 0.45f)
+                )
             ) {
                 Column(
                     modifier = Modifier
@@ -439,9 +523,9 @@ fun UnifiedStudioScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = diag.recordingTypeLabel,
+                            text = if (state.lastCommandUnsupported) "COMMAND NOT APPLIED" else diag.recordingTypeLabel,
                             style = MaterialTheme.typography.labelMedium,
-                            color = genreAccent
+                            color = if (state.lastCommandUnsupported) PeakAmber else genreAccent
                         )
                         Text(
                             text = state.tfliteRuntimeMode,
@@ -452,7 +536,7 @@ fun UnifiedStudioScreen(
                     Text(
                         text = state.aiAppliedSummary,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = SignalWhite
+                        color = if (state.lastCommandUnsupported) PeakAmber else SignalWhite
                     )
                 }
             }
@@ -484,7 +568,10 @@ fun UnifiedStudioScreen(
             }
 
             AnimatedVisibility(visible = state.processing.isRunning) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
+                Column(
+                    modifier = Modifier.padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     LinearProgressIndicator(
                         progress = { state.processing.progress.coerceIn(0f, 1f) },
                         color = BusGreen,
@@ -494,6 +581,39 @@ fun UnifiedStudioScreen(
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp))
                     )
+                    OutlinedButton(
+                        onClick = onCancelProcessing,
+                        border = BorderStroke(1.dp, PeakAmber),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("cancel_processing_button")
+                    ) {
+                        Text("CANCEL CALIBRATION", style = MaterialTheme.typography.labelMedium, color = PeakAmber)
+                    }
+                }
+            }
+
+            if (!state.processing.isRunning && (state.processing.isCancelled || state.processing.errorMessage != null)) {
+                Spacer(Modifier.height(8.dp))
+                val isError = state.processing.errorMessage != null
+                val statusAccent = if (isError) GlyphCrimson else PeakAmber
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, statusAccent.copy(alpha = 0.7f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("studio_processing_status_banner")
+                ) {
+                    Text(
+                        text = state.processing.errorMessage
+                            ?: "CALIBRATION CANCELLED — PREVIOUS MASTER SETTINGS PRESERVED",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusAccent,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                    )
                 }
             }
 
@@ -501,7 +621,7 @@ fun UnifiedStudioScreen(
 
             // Mastering Preset Buttons (Warm Tape, Transparent Punch, Broadcast)
             Text(
-                text = "MASTERING PRESETS (AUTO-CONFIG SBR & LIMITER)",
+                text = "MASTERING PRESETS (EXCITER & LIMITER)",
                 style = MaterialTheme.typography.labelSmall,
                 color = TechSlate
             )
@@ -541,9 +661,9 @@ fun UnifiedStudioScreen(
 
             Spacer(Modifier.height(14.dp))
 
-            // Local Natural-Language Command Bar (AR / EN Offline Intent)
+            // Offline Natural-Language Command Console (AR / EN Offline Intent)
             Text(
-                text = "ASK LOCAL AI TO SHAPE SOUND (AR / EN)",
+                text = "MASTERING COMMAND CONSOLE (AR / EN)",
                 style = MaterialTheme.typography.labelSmall,
                 color = TechSlate
             )
@@ -670,7 +790,7 @@ fun UnifiedStudioScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 TelemetryStatTile(
-                    label = "HF RESTORE",
+                    label = "HF EXCITER",
                     value = String.format(Locale.US, "%.1fkHz -> %dk", diag.estimatedBandwidthKhz, state.hiResTargetKhz),
                     accentColor = CyanScope,
                     modifier = Modifier.weight(1.1f)
@@ -682,6 +802,20 @@ fun UnifiedStudioScreen(
                     modifier = Modifier.weight(0.9f)
                 )
             }
+
+            Spacer(Modifier.height(10.dp))
+            AnalysisTelemetrySection(
+                report = diag.analysisReport,
+                accentColor = genreAccent
+            )
+
+            Spacer(Modifier.height(10.dp))
+            DecisionExplainabilitySection(
+                classificationSourceLabel = state.classificationSourceLabel,
+                targetStandard = state.decisionTargetStandard,
+                safetyWarnings = state.decisionSafetyWarnings,
+                stages = state.decisionStages
+            )
         }
 
         // 4. Interactive Spectral Response Curve
@@ -705,7 +839,13 @@ fun UnifiedStudioScreen(
         ) {
             Icon(Icons.Filled.Tune, contentDescription = null, tint = GlyphCrimson, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text("PRO MANUAL TUNING (EQ • DECK • STEMS • 64-BIT BUS)", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
+            Text(
+                text = "PRO MANUAL TUNING (EQ • DECK • BAND MIXER • DIAGNOSTICS)",
+                style = MaterialTheme.typography.labelMedium,
+                color = SignalWhite,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 
@@ -791,6 +931,7 @@ fun UnifiedStudioScreen(
                             onToggleHiResKhz = onToggleHiResKhz,
                             onSelectGlyphPattern = onSelectGlyphPattern
                         )
+                        ProTuningTab.DIAGNOSTICS -> ProSheetDiagnosticsContent(state)
                     }
                 }
             }
@@ -1070,3 +1211,113 @@ private fun ProSheetEngineContent(
         }
     }
 }
+
+@Composable
+private fun ProSheetDiagnosticsContent(state: WaviqUiState) {
+    val context = LocalContext.current
+    val report = state.trackInfo.diagnostic.analysisReport
+    val models = OnDeviceModelRegistry.getRegisteredModels(context)
+
+    Text("BS.1770 LOUDNESS & PEAK MATRIX", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TelemetryStatTile(
+            label = "INTEGRATED",
+            value = String.format(Locale.US, "%.1f LUFS", report.integratedLufs),
+            accentColor = BusGreen,
+            modifier = Modifier.weight(1f)
+        )
+        TelemetryStatTile(
+            label = "LRA",
+            value = String.format(Locale.US, "%.1f LU", report.loudnessRangeLu),
+            accentColor = CyanScope,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TelemetryStatTile(
+            label = "MOMENTARY MAX",
+            value = String.format(Locale.US, "%.1f LUFS", report.momentaryMaxLufs),
+            accentColor = SignalWhite,
+            modifier = Modifier.weight(1f)
+        )
+        TelemetryStatTile(
+            label = "SHORT-TERM MAX",
+            value = String.format(Locale.US, "%.1f LUFS", report.shortTermMaxLufs),
+            accentColor = SignalWhite,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TelemetryStatTile(
+            label = "SAMPLE PEAK",
+            value = String.format(Locale.US, "%.1f dBFS", report.samplePeakDb),
+            accentColor = PeakAmber,
+            modifier = Modifier.weight(1f)
+        )
+        TelemetryStatTile(
+            label = "TRUE PEAK (4X)",
+            value = String.format(Locale.US, "%.1f dBTP", report.truePeakDb),
+            accentColor = if (report.truePeakDb > -1.0f) GlyphCrimson else BusGreen,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    Text("STARTUP GUARD & RUNTIME PROVENANCE", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+    Surface(
+        color = ConsolePanel,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, HairlineBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("HEALTH: ${state.startupGuard.healthState.label}", style = MaterialTheme.typography.labelMedium, color = BusGreen)
+                Text(state.classificationSourceLabel, style = MaterialTheme.typography.labelSmall, color = PeakAmber)
+            }
+            listOf(
+                state.startupGuard.tfliteCheck,
+                state.startupGuard.databaseCheck,
+                state.startupGuard.permissionCheck
+            ).forEach { check ->
+                Text("${check.title}: ${check.status.label} — ${check.detail}", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+            }
+        }
+    }
+
+    Text("ON-DEVICE MODEL REGISTRY", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("pro_diagnostics_model_registry"),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        models.forEach { spec ->
+            val verifiedColor = if (spec.isBundledAndVerified) BusGreen else PeakAmber
+            Surface(
+                color = ConsolePanel,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, verifiedColor.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(spec.title, style = MaterialTheme.typography.labelMedium, color = SignalWhite, modifier = Modifier.weight(1f))
+                        Text(
+                            text = if (spec.isBundledAndVerified) "BUNDLED TFLITE" else "HEURISTIC MODE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = verifiedColor
+                        )
+                    }
+                    Text("Asset: ${spec.assetName} • ${spec.architecture}", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+                    Text("Provenance: ${spec.licenseAndProvenance}", style = MaterialTheme.typography.labelSmall, color = TechSlate)
+                    Text("Limit: ${spec.knownLimitations}", style = MaterialTheme.typography.labelSmall, color = PeakAmber)
+                }
+            }
+        }
+    }
+}
+

@@ -86,7 +86,7 @@ fun Screen05AutonomousEngine(
         HardwarePanel(
             title = "#05 // SMART GENRE ADAPTIVE MASTERING",
             badge = if (state.isGenreAutoDetected && activeGenre == diag.detectedGenre) {
-                "AUTO-DETECTED (${diag.genreConfidencePct}%)"
+                "AUTO-DETECTED (HEURISTIC)"
             } else {
                 "MANUAL OVERRIDE"
             },
@@ -179,7 +179,7 @@ fun Screen05AutonomousEngine(
 
         HardwarePanel(
             title = "TARGET STREAMING PROFILES",
-            badge = "AIR-GAPPED NPU"
+            badge = "64-BIT OFFLINE DSP"
         ) {
             Text(
                 text = "Manual override profiles for fine-tuning dynamic range, target LUFS, and brickwall saturation.",

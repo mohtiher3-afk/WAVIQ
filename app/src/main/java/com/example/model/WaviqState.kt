@@ -15,7 +15,8 @@ enum class ProTuningTab(val label: String) {
     EQ("5-BAND EQ"),
     DECK("TACTILE DECK"),
     STEMS("BAND MIXER"),
-    ENGINE("64-BIT BUS")
+    ENGINE("64-BIT BUS"),
+    DIAGNOSTICS("DIAGNOSTICS")
 }
 
 enum class AudioBusMode(val code: String) {
@@ -303,6 +304,65 @@ data class TranscodeConfig(
     val targetTruePeakDb: Float = -1.0f
 )
 
+enum class FindingSeverity {
+    INFO,
+    ADVISORY,
+    WARNING
+}
+
+@Immutable
+data class AudioTechnicalFinding(
+    val code: String,
+    val title: String,
+    val detail: String,
+    val severity: FindingSeverity
+)
+
+@Immutable
+data class VocalActivityEstimate(
+    val presencePct: Int = 0,
+    val label: String = "UNDETERMINED"
+)
+
+@Immutable
+data class RhythmEstimate(
+    val bpm: Int? = null,
+    val confidence: Float = 0f,
+    val feelLabel: String = "UNDETERMINED"
+)
+
+@Immutable
+data class AudioAnalysisReport(
+    val taxonomyVersion: Int = 1,
+    val integratedLufs: Float = -16.4f,
+    val momentaryMaxLufs: Float = -14.0f,
+    val shortTermMaxLufs: Float = -15.0f,
+    val loudnessRangeLu: Float = 5.0f,
+    val samplePeakDb: Float = -3.0f,
+    val truePeakDb: Float = -2.8f,
+    val rmsDb: Float = -15.8f,
+    val crestFactorDb: Float = 9.4f,
+    val lowEnergyPct: Int = 34,
+    val midEnergyPct: Int = 46,
+    val highEnergyPct: Int = 20,
+    val estimatedBandwidthKhz: Float = 18.2f,
+    val stereoWidthPct: Int = 64,
+    val stereoCorrelation: Float = 0.72f,
+    val hasPhaseRisk: Boolean = false,
+    val isUnknownOrMixedStyle: Boolean = false,
+    val primaryTaxonomyId: String = "pop_contemporary",
+    val primaryStyleLabel: String = "Contemporary Pop",
+    val styleConfidence: Float = 0.62f,
+    val multiLabelStyles: List<com.example.audio.ScoredTaxonomyTag> = emptyList(),
+    val moodTags: List<String> = emptyList(),
+    val productionStyleTags: List<String> = emptyList(),
+    val vocalStyleTags: List<String> = emptyList(),
+    val vocalActivity: VocalActivityEstimate = VocalActivityEstimate(),
+    val rhythm: RhythmEstimate = RhythmEstimate(),
+    val technicalFindings: List<AudioTechnicalFinding> = emptyList(),
+    val filenameHintNote: String? = null
+)
+
 @Immutable
 data class TrackDiagnosticReport(
     val recordingTypeLabel: String = "FULL STUDIO MIX",
@@ -311,10 +371,12 @@ data class TrackDiagnosticReport(
     val clarityNeedLabel: String = "MODERATE",
     val recommendedProfile: EnhanceProfile = EnhanceProfile.STREAMING_MASTER,
     val recommendedRestorationAmount: Float = 0.55f,
-    val autoAppliedSummary: String = "TFLITE GATE + HF RESTORE + -1.0 dBTP LIMITER",
+    val autoAppliedSummary: String = "Biquad EQ + SBR Exciter + 3-Band -1.0 dBTP Limiter",
     val detectedGenre: MusicGenre = MusicGenre.POP,
     val genreConfidencePct: Int = 88,
-    val genreRationale: String = "Estimated from acoustic energy and crest ratio"
+    val genreRationale: String = "Estimated from acoustic energy and crest ratio",
+    val isHeuristicEstimate: Boolean = true,
+    val analysisReport: AudioAnalysisReport = AudioAnalysisReport()
 )
 
 @Immutable
@@ -328,10 +390,12 @@ data class AudioTrackInfo(
     val bitDepthLabel: String = "64-BIT DOUBLE DSP",
     val integratedLufs: Float = -16.4f,
     val truePeakDb: Float = -2.8f,
+    val samplePeakDb: Float = -3.0f,
     val dynamicRangeDb: Float = 9.4f,
     val stereoWidthPct: Int = 64,
     val waveformPeaks: List<Float> = emptyList(),
     val isBundledRef: Boolean = true,
+    val isDurationTruncated: Boolean = false,
     val diagnostic: TrackDiagnosticReport = TrackDiagnosticReport()
 )
 
@@ -388,7 +452,9 @@ data class ProcessingStatus(
     val progress: Float = 0f,
     val currentStage: String = "IDLE — READY FOR AUDIT",
     val completedPasses: Int = 0,
-    val hasCompletedOnce: Boolean = false
+    val hasCompletedOnce: Boolean = false,
+    val isCancelled: Boolean = false,
+    val errorMessage: String? = null
 )
 
 @Immutable
@@ -402,6 +468,7 @@ data class ExportJobState(
     val lastExportedFormat: String? = null,
     val lastFinalLufs: Float = -14.0f,
     val lastFinalPeakDb: Float = -1.0f,
+    val isCancelled: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -460,13 +527,21 @@ data class StartupGuardReport(
 }
 
 @Immutable
+data class DspDecisionStage(
+    val stageName: String,
+    val parameterSummary: String,
+    val reason: String,
+    val safetyClamped: Boolean = false
+)
+
+@Immutable
 data class WaviqUiState(
     val activeRouteId: Int = 1,
     val activeTab: WaviqTab = WaviqTab.STUDIO,
     val isDevMapOpen: Boolean = false,
     val devMapFilter: WaviqTab? = null,
     val inspectedRouteId: Int = 1,
-    val lastDispatchedLog: String = "LOCAL AI + 64-BIT STUDIO READY",
+    val lastDispatchedLog: String = "OFFLINE 64-BIT STUDIO READY",
     val busModeOverride: AudioBusMode? = null,
     val trackInfo: AudioTrackInfo = AudioTrackInfo(),
     val telemetry: AudioTelemetry = AudioTelemetry(),
@@ -493,8 +568,14 @@ data class WaviqUiState(
     val startupGuard: StartupGuardReport = StartupGuardReport(),
     val isStartupBannerDismissed: Boolean = false,
     val aiCommandInput: String = "",
-    val aiAppliedSummary: String = "Auto-tuned 64-bit EQ, SBR High-Freq & 3-Band ISP Ceiling",
+    val aiAppliedSummary: String = "64-bit Biquad EQ, SBR Exciter & 3-Band ISP Ceiling",
     val aiConfidencePct: Int = 92,
+    val lastCommandUnsupported: Boolean = false,
+    val decisionStages: List<DspDecisionStage> = emptyList(),
+    val decisionSafetyWarnings: List<String> = emptyList(),
+    val classificationSourceLabel: String = "HEURISTIC ACOUSTIC",
+    val lastParsedIntents: List<String> = emptyList(),
+    val decisionTargetStandard: String? = null,
     val isProSheetOpen: Boolean = false,
     val proTuningTab: ProTuningTab = ProTuningTab.EQ
 )

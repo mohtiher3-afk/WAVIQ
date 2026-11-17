@@ -148,7 +148,7 @@ fun StudioTopBar(
                             border = BorderStroke(1.dp, HairlineBorder)
                         ) {
                             Text(
-                                text = "LOCAL AI ${aiConfidencePct}%",
+                                text = if (effectiveBypassed) "BYPASS DRY" else "64-BIT OFFLINE",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (effectiveBypassed) TechSlate else BusGreen,
                                 maxLines = 1,

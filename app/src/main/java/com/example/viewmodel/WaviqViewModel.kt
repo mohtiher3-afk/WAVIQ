@@ -9,6 +9,7 @@ import com.example.audio.AiMasterDecision
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioDspEngine
 import com.example.audio.LocalAiMasteringAgent
+import com.example.audio.OnDeviceModelRegistry
 import com.example.data.MasterLibraryRepository
 import com.example.data.MasterTrackEntity
 import com.example.data.WaviqDatabase
@@ -32,9 +33,9 @@ import com.example.model.TranscodeConfig
 import com.example.model.WaviqRouteRegistry
 import com.example.model.WaviqTab
 import com.example.model.WaviqUiState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -69,6 +70,7 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
 
     private var processingJob: Job? = null
     private var exportJob: Job? = null
+    private var activeExportTargetFile: File? = null
 
     init {
         dspEngine.telemetry
@@ -152,9 +154,11 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                     fallbackSummary = "Startup validation fallback: ${err.message ?: "unexpected error"}"
                 )
             }
+            val classSource = OnDeviceModelRegistry.detectStyleClassificationSource(getApplication())
             _uiState.update { state ->
                 state.copy(
                     startupGuard = report,
+                    classificationSourceLabel = classSource.badgeLabel,
                     isStartupBannerDismissed = if (report.isDegraded) false else state.isStartupBannerDismissed,
                     tfliteRuntimeMode = if (report.tfliteCheck.status == StartupCheckStatus.FALLBACK) {
                         "DSP FALLBACK"
@@ -340,6 +344,10 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearFileError() {
+        _uiState.update { it.copy(fileErrorMessage = null) }
+    }
+
     fun loadSavedMasterForPlayback(track: MasterTrackEntity) {
         viewModelScope.launch {
             val file = File(track.filePath)
@@ -423,44 +431,84 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
         applyAiDecision(decision, clearInput = true, autoDetected = false)
     }
 
+    fun cancelProcessing() {
+        processingJob?.cancel()
+        processingJob = null
+        _uiState.update {
+            it.copy(
+                processing = ProcessingStatus(
+                    isRunning = false,
+                    progress = 0f,
+                    currentStage = "CANCELLED BY USER",
+                    completedPasses = 0,
+                    hasCompletedOnce = it.processing.hasCompletedOnce,
+                    isCancelled = true,
+                    errorMessage = null
+                ),
+                lastDispatchedLog = "PROCESSING CANCELLED // DSP STATE PRESERVED"
+            )
+        }
+    }
+
     fun runAutoMasterAi() {
         processingJob?.cancel()
         processingJob = viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    processing = ProcessingStatus(
-                        isRunning = true,
-                        progress = 0.30f,
-                        currentStage = "ANALYSIS // EVALUATING ACOUSTIC BALANCE & CREST RATIO",
-                        completedPasses = 1,
-                        hasCompletedOnce = it.processing.hasCompletedOnce
+            try {
+                _uiState.update {
+                    it.copy(
+                        processing = ProcessingStatus(
+                            isRunning = true,
+                            progress = 0.30f,
+                            currentStage = "ANALYSIS // EVALUATING ACOUSTIC BALANCE & CREST RATIO",
+                            completedPasses = 1,
+                            hasCompletedOnce = it.processing.hasCompletedOnce,
+                            isCancelled = false,
+                            errorMessage = null
+                        )
                     )
-                )
-            }
-            val cur = _uiState.value
-            val decision = withContext(Dispatchers.Default) {
-                LocalAiMasteringAgent.autoCalibrate(cur.trackInfo, cur.eqBands)
-            }
-            _uiState.update {
-                it.copy(
-                    processing = it.processing.copy(
-                        progress = 0.75f,
-                        currentStage = "DSP CONFIG // APPLYING 64-BIT CALIBRATION & 3-BAND LIMITER",
-                        completedPasses = 2
+                }
+                val cur = _uiState.value
+                val decision = withContext(Dispatchers.Default) {
+                    LocalAiMasteringAgent.autoCalibrate(cur.trackInfo, cur.eqBands)
+                }
+                _uiState.update {
+                    it.copy(
+                        processing = it.processing.copy(
+                            progress = 0.75f,
+                            currentStage = "DSP CONFIG // APPLYING 64-BIT CALIBRATION & 3-BAND LIMITER",
+                            completedPasses = 2
+                        )
                     )
-                )
-            }
-            applyAiDecision(decision, clearInput = false, autoDetected = true)
-            _uiState.update {
-                it.copy(
-                    processing = ProcessingStatus(
-                        isRunning = false,
-                        progress = 1.0f,
-                        currentStage = "RECOMMENDATIONS APPLIED // ${decision.appliedSummary}",
-                        completedPasses = 3,
-                        hasCompletedOnce = true
+                }
+                applyAiDecision(decision, clearInput = false, autoDetected = true)
+                _uiState.update {
+                    it.copy(
+                        processing = ProcessingStatus(
+                            isRunning = false,
+                            progress = 1.0f,
+                            currentStage = "RECOMMENDATIONS APPLIED // ${decision.appliedSummary}",
+                            completedPasses = 3,
+                            hasCompletedOnce = true,
+                            isCancelled = false,
+                            errorMessage = null
+                        )
                     )
-                )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (err: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        processing = ProcessingStatus(
+                            isRunning = false,
+                            progress = 0f,
+                            currentStage = "ERROR // ${err.message ?: "Calibration failed"}",
+                            hasCompletedOnce = it.processing.hasCompletedOnce,
+                            isCancelled = false,
+                            errorMessage = err.message ?: "Calibration failed"
+                        )
+                    )
+                }
             }
         }
     }
@@ -560,6 +608,7 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                     air = profile.air,
                     ceilingDb = profile.ceilingDb
                 ),
+                transcodeConfig = state.transcodeConfig.copy(targetTruePeakDb = profile.ceilingDb),
                 abEnhancedEngaged = true,
                 bypassEngaged = true
             )
@@ -589,6 +638,7 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                     air = genre.air,
                     ceilingDb = genre.ceilingDb
                 ),
+                transcodeConfig = state.transcodeConfig.copy(targetTruePeakDb = genre.ceilingDb),
                 abEnhancedEngaged = true,
                 bypassEngaged = true,
                 lastDispatchedLog = "GENRE SET // ${genre.title} (${genre.targetKhz}kHz ${genre.oversampling.label})"
@@ -627,39 +677,42 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
     fun startDeepProcessing(onComplete: () -> Unit) {
         processingJob?.cancel()
         processingJob = viewModelScope.launch {
-            val stages = listOf(
-                "PASS 1/4 // SPECTRAL FFT AUDIT",
-                "PASS 2/4 // HARMONIC TUBE CALIBRATION",
-                "PASS 3/4 // MULTIBAND DYNAMICS ALIGN",
-                "PASS 4/4 // TRUE-PEAK LIMITER SEAL"
-            )
-            val totalSteps = 70
-            val stepDelayMs = 50L // 70 * 50ms = 3.5s
-            for (step in 1..totalSteps) {
-                val p = step / totalSteps.toFloat()
-                val stageIdx = ((p * 4f).toInt()).coerceIn(0, 3)
-                _uiState.update {
-                    it.copy(
-                        processing = ProcessingStatus(
-                            isRunning = true,
-                            progress = p,
-                            currentStage = stages[stageIdx],
-                            completedPasses = stageIdx + 1,
-                            hasCompletedOnce = it.processing.hasCompletedOnce
-                        )
+            _uiState.update {
+                it.copy(
+                    processing = ProcessingStatus(
+                        isRunning = true,
+                        progress = 0.25f,
+                        currentStage = "PASS 1/3 // BS.1770 LUFS & CREST AUDIT",
+                        completedPasses = 1,
+                        hasCompletedOnce = it.processing.hasCompletedOnce
                     )
-                }
-                delay(stepDelayMs)
+                )
             }
-            // Apply selected profile parameters cleanly upon completion
-            selectEnhanceProfile(_uiState.value.selectedProfile)
+            val selectedProfile = _uiState.value.selectedProfile
+            withContext(Dispatchers.Default) {
+                val (l, r) = dspEngine.audioProcessor.getCurrentBuffers()
+                if (l.isNotEmpty() && r.isNotEmpty()) {
+                    com.example.audio.AudioMeasurement.measureIntegratedLufs(l, r, dspEngine.audioProcessor.sampleRate)
+                    com.example.audio.AudioMeasurement.measureTruePeakDb(l, r)
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    processing = it.processing.copy(
+                        progress = 0.70f,
+                        currentStage = "PASS 2/3 // CONFIGURING 64-BIT EQ & 3-BAND LIMITER",
+                        completedPasses = 2
+                    )
+                )
+            }
+            selectEnhanceProfile(selectedProfile)
             _uiState.update {
                 it.copy(
                     processing = ProcessingStatus(
                         isRunning = false,
                         progress = 1f,
-                        currentStage = "4-PASS MASTERING LOCKED",
-                        completedPasses = 4,
+                        currentStage = "CALIBRATION LOCKED // ${selectedProfile.title}",
+                        completedPasses = 3,
                         hasCompletedOnce = true
                     )
                 )
@@ -669,7 +722,13 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateDeckParams(transform: (TactileDeckParams) -> TactileDeckParams) {
-        _uiState.update { it.copy(deckParams = transform(it.deckParams)) }
+        _uiState.update {
+            val next = transform(it.deckParams)
+            it.copy(
+                deckParams = next,
+                transcodeConfig = it.transcodeConfig.copy(targetTruePeakDb = next.ceilingDb)
+            )
+        }
         syncDspToEngine()
     }
 
@@ -730,6 +789,28 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cancelExportMaster() {
+        exportJob?.cancel()
+        exportJob = null
+        activeExportTargetFile?.let { f ->
+            if (f.exists()) runCatching { f.delete() }
+        }
+        activeExportTargetFile = null
+        _uiState.update { cur ->
+            cur.copy(
+                exportJob = cur.exportJob.copy(
+                    isExporting = false,
+                    progress = 0f,
+                    stageLabel = "CANCELLED BY USER",
+                    bytesWritten = 0L,
+                    isCancelled = true,
+                    errorMessage = null
+                ),
+                lastDispatchedLog = "EXPORT CANCELLED // PARTIAL FILE REMOVED"
+            )
+        }
+    }
+
     fun startExportMaster(onReadyForModal: () -> Unit, onCompleteDone: () -> Unit) {
         if (_uiState.value.exportJob.isExporting) return
         onReadyForModal()
@@ -746,20 +827,22 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
             val fileName = "${safeBase}_MASTER_${timestamp}.${config.format.extension}"
             val outDir = File(getApplication<Application>().filesDir, "masters")
             val outFile = File(outDir, fileName)
+            activeExportTargetFile = outFile
 
             _uiState.update {
                 it.copy(
-                    exportJob = ExportJobState(
+                    exportJob = it.exportJob.copy(
                         isExporting = true,
                         progress = 0.02f,
                         stageLabel = "INITIALIZING PCM RENDER BUS",
                         bytesWritten = 0L,
+                        isCancelled = false,
                         errorMessage = null
                     )
                 )
             }
 
-            runCatching {
+            try {
                 val (finalLufs, finalPeak) = dspEngine.exportMasterWav(outFile, config) { p, bytes ->
                     val label = when {
                         p < 0.45f -> "APPLYING BIQUAD EQ + HARMONIC DSP"
@@ -790,6 +873,7 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                     filePath = outFile.absolutePath
                 )
                 repository.saveMaster(entity)
+                activeExportTargetFile = null
 
                 _uiState.update { cur ->
                     cur.copy(
@@ -802,17 +886,26 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                             lastExportedTitle = entity.title,
                             lastExportedFormat = config.format.label,
                             lastFinalLufs = finalLufs,
-                            lastFinalPeakDb = finalPeak
+                            lastFinalPeakDb = finalPeak,
+                            isCancelled = false,
+                            errorMessage = null
                         ),
                         lastDispatchedLog = "EXPORT 100% // ${entity.title}"
                     )
                 }
                 onCompleteDone()
-            }.onFailure { err ->
+            } catch (e: CancellationException) {
+                if (outFile.exists()) runCatching { outFile.delete() }
+                activeExportTargetFile = null
+                throw e
+            } catch (err: Throwable) {
+                if (outFile.exists()) runCatching { outFile.delete() }
+                activeExportTargetFile = null
                 _uiState.update { cur ->
                     cur.copy(
                         exportJob = cur.exportJob.copy(
                             isExporting = false,
+                            isCancelled = false,
                             errorMessage = err.message ?: "Export failed."
                         )
                     )
@@ -850,7 +943,8 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                     aiAppliedSummary = decision.unsupportedGuidance ?: decision.appliedSummary,
                     lastDispatchedLog = decision.appliedSummary,
                     aiCommandInput = if (clearInput) "" else state.aiCommandInput,
-                    aiConfidencePct = 0
+                    aiConfidencePct = 0,
+                    lastCommandUnsupported = true
                 )
             }
             return
@@ -862,6 +956,7 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
         dspEngine.setHiResRestorationAmount(decision.restorationAmount)
         dspEngine.setHiResStereoExpansionAmount(decision.stereoExpansionAmount)
 
+        val classSource = OnDeviceModelRegistry.detectStyleClassificationSource(getApplication())
         _uiState.update { state ->
             state.copy(
                 selectedProfile = decision.selectedProfile,
@@ -871,11 +966,18 @@ class WaviqViewModel(application: Application) : AndroidViewModel(application) {
                 hiResTargetKhz = decision.targetKhz,
                 eqBands = decision.eqBands,
                 deckParams = decision.deckParams,
+                transcodeConfig = state.transcodeConfig.copy(targetTruePeakDb = decision.deckParams.ceilingDb),
                 abEnhancedEngaged = true,
                 bypassEngaged = true,
                 aiCommandInput = if (clearInput) "" else state.aiCommandInput,
                 aiAppliedSummary = decision.appliedSummary,
                 aiConfidencePct = decision.confidencePct,
+                lastCommandUnsupported = false,
+                decisionStages = decision.stages,
+                decisionSafetyWarnings = decision.safetyWarnings,
+                classificationSourceLabel = classSource.badgeLabel,
+                lastParsedIntents = decision.parsedIntents,
+                decisionTargetStandard = decision.targetStandardLabel,
                 lastDispatchedLog = decision.appliedSummary
             )
         }

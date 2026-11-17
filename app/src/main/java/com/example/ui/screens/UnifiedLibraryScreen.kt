@@ -57,6 +57,7 @@ import com.example.ui.theme.ConsolePanel
 import com.example.ui.theme.GlyphCrimson
 import com.example.ui.theme.GlyphCrimsonMuted
 import com.example.ui.theme.HairlineBorder
+import com.example.ui.theme.PeakAmber
 import com.example.ui.theme.SignalWhite
 import com.example.ui.theme.TechSlate
 import java.util.Locale
@@ -73,6 +74,8 @@ fun UnifiedLibraryScreen(
     onToggleAb: (Boolean) -> Unit,
     onLoadSavedMaster: (MasterTrackEntity) -> Unit,
     onDeleteSavedMaster: (Int) -> Unit,
+    onCancelExport: () -> Unit = {},
+    onGoToStudioClick: () -> Unit = {},
     scrollState: ScrollState = rememberScrollState()
 ) {
     val cfg = state.transcodeConfig
@@ -89,9 +92,16 @@ fun UnifiedLibraryScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         // 1. Hi-Res Render & Export Card
+        val matrixBadge = when {
+            job.isExporting -> "RENDERING"
+            job.isCancelled -> "CANCELLED"
+            job.errorMessage != null -> "RENDER ERROR"
+            job.progress >= 0.99f && job.lastExportedPath != null -> "100% READY"
+            else -> "64-BIT OFFLINE BUS"
+        }
         HardwarePanel(
             title = "EXPORT & HI-RES MASTER MATRIX",
-            badge = if (job.isExporting) "RENDERING" else if (job.progress >= 0.99f && job.lastExportedPath != null) "100% READY" else "64-BIT OFFLINE BUS",
+            badge = matrixBadge,
             accentBorder = true
         ) {
             ExportFormat.entries.forEach { fmt ->
@@ -131,6 +141,7 @@ fun UnifiedLibraryScreen(
 
             Spacer(Modifier.height(10.dp))
 
+            val isFloat32Format = cfg.format.bitDepth == 32
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -138,10 +149,19 @@ fun UnifiedLibraryScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("TPDF SHAPED DITHER", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
-                    Text("Triangular dither for crisp 16/24-bit exports", style = MaterialTheme.typography.bodyMedium, color = TechSlate)
+                    Text(
+                        text = if (isFloat32Format) {
+                            "Bypassed automatically for 32-bit IEEE Float exports"
+                        } else {
+                            "Triangular dither for 16/24-bit integer PCM exports"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TechSlate
+                    )
                 }
                 Switch(
-                    checked = cfg.ditherEnabled,
+                    checked = cfg.ditherEnabled && !isFloat32Format,
+                    enabled = !isFloat32Format,
                     onCheckedChange = { onUpdateConfig(null, it, null) },
                     colors = SwitchDefaults.colors(checkedTrackColor = GlyphCrimson, checkedThumbColor = SignalWhite),
                     modifier = Modifier.testTag("transcode_dither_switch")
@@ -156,7 +176,11 @@ fun UnifiedLibraryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("NORMALIZE CEILING (-1.0 dBTP)", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
+                    Text(
+                        text = String.format(Locale.US, "NORMALIZE CEILING (%.1f dBTP)", cfg.targetTruePeakDb),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = SignalWhite
+                    )
                     Text("3-band True-Peak ISP compliant limiting", style = MaterialTheme.typography.bodyMedium, color = TechSlate)
                 }
                 Switch(
@@ -191,7 +215,10 @@ fun UnifiedLibraryScreen(
             }
 
             AnimatedVisibility(visible = job.isExporting) {
-                Column(modifier = Modifier.padding(top = 10.dp)) {
+                Column(
+                    modifier = Modifier.padding(top = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     LinearProgressIndicator(
                         progress = { job.progress.coerceIn(0f, 1f) },
                         color = GlyphCrimson,
@@ -201,12 +228,56 @@ fun UnifiedLibraryScreen(
                             .height(8.dp)
                             .clip(RoundedCornerShape(4.dp))
                     )
+                    OutlinedButton(
+                        onClick = onCancelExport,
+                        border = BorderStroke(1.dp, PeakAmber),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("cancel_export_button")
+                    ) {
+                        Text("CANCEL RENDER", style = MaterialTheme.typography.labelMedium, color = PeakAmber)
+                    }
+                }
+            }
+
+            if (!job.isExporting && job.isCancelled) {
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, PeakAmber),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("library_export_cancelled_banner")
+                ) {
+                    Text(
+                        text = "Render cancelled — incomplete output discarded cleanly.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = PeakAmber,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
                 }
             }
 
             job.errorMessage?.let { err ->
-                Spacer(Modifier.height(8.dp))
-                Text(err, style = MaterialTheme.typography.bodyMedium, color = GlyphCrimson)
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    color = ConsolePanel,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, GlyphCrimson),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("library_export_error_banner")
+                ) {
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = GlyphCrimson,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
             }
 
             if (!job.isExporting && job.lastExportedPath != null) {
@@ -214,7 +285,8 @@ fun UnifiedLibraryScreen(
                 Surface(
                     color = ConsolePanel,
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, BusGreen.copy(alpha = 0.6f))
+                    border = BorderStroke(1.dp, BusGreen.copy(alpha = 0.6f)),
+                    modifier = Modifier.testTag("library_export_completed_card")
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -331,7 +403,8 @@ fun UnifiedLibraryScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 12.dp),
+                        .padding(vertical = 12.dp)
+                        .testTag("library_empty_state"),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = TechSlate, modifier = Modifier.size(32.dp))
@@ -346,6 +419,17 @@ fun UnifiedLibraryScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = TechSlate
                     )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = onGoToStudioClick,
+                        border = BorderStroke(1.dp, HairlineBorder),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("library_empty_back_to_studio_button")
+                    ) {
+                        Text("OPEN STUDIO", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
+                    }
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

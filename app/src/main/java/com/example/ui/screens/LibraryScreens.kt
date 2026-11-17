@@ -118,6 +118,7 @@ fun Screen13TranscodeMatrix(
 
             Spacer(Modifier.height(10.dp))
 
+            val isFloat32Format = cfg.format.bitDepth == 32
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -125,10 +126,19 @@ fun Screen13TranscodeMatrix(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("TPDF SHAPED DITHER", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
-                    Text("Triangular noise-shaping for 16-bit & 24-bit PCM masters", style = MaterialTheme.typography.bodyMedium, color = TechSlate)
+                    Text(
+                        text = if (isFloat32Format) {
+                            "Bypassed automatically for 32-bit IEEE Float exports"
+                        } else {
+                            "Triangular noise-shaping for 16-bit & 24-bit PCM masters"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TechSlate
+                    )
                 }
                 Switch(
-                    checked = cfg.ditherEnabled,
+                    checked = cfg.ditherEnabled && !isFloat32Format,
+                    enabled = !isFloat32Format,
                     onCheckedChange = { onUpdateConfig(null, it, null) },
                     colors = SwitchDefaults.colors(checkedTrackColor = GlyphCrimson, checkedThumbColor = SignalWhite),
                     modifier = Modifier.testTag("transcode_dither_switch")
@@ -143,7 +153,11 @@ fun Screen13TranscodeMatrix(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("NORMALIZE CEILING (-1.0 dBTP)", style = MaterialTheme.typography.labelMedium, color = SignalWhite)
+                    Text(
+                        text = String.format(Locale.US, "NORMALIZE CEILING (%.1f dBTP)", cfg.targetTruePeakDb),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = SignalWhite
+                    )
                     Text("True-peak compliant brickwall seal", style = MaterialTheme.typography.bodyMedium, color = TechSlate)
                 }
                 Switch(

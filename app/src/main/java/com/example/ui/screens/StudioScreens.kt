@@ -81,7 +81,7 @@ fun Screen09StudioProSuite(
     val chainModules = listOf(
         Triple("01 // BIQUAD 5X EQ", "Sub ${state.eqBands.firstOrNull()?.gainDb ?: 0f} dB  •  Air ${state.eqBands.lastOrNull()?.gainDb ?: 0f} dB", 3),
         Triple("02 // HARMONIC DRIVE", "Drive ${(d.drive * 100).toInt()}%  •  Punch ${(d.punch * 100).toInt()}%", 7),
-        Triple("03 // 4-WAY STEM MATRIX", "Vocals/Drums/Bass/Other Crossover", 10),
+        Triple("03 // BAND CROSSOVER MIXER", "Mid/Transients/Sub/Air Crossover", 10),
         Triple("04 // TRUE-PEAK LIMITER", "Ceiling ${d.ceilingDb} dBTP  •  ${state.oversamplingFactor.label}", 11)
     )
 
@@ -110,7 +110,7 @@ fun Screen09StudioProSuite(
             accentBorder = true
         ) {
             Text(
-                text = "Unified 64-bit Double DSP console chaining parametric EQ, harmonic saturation, SBR HF reconstruction + M/S width, TFLite AI, stems, and 3-band True-Peak limiting.",
+                text = "Unified 64-bit Double DSP console chaining parametric EQ, harmonic saturation, SBR HF exciter + M/S width, dynamics gate, band mixer, and 3-band True-Peak limiting.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TechSlate
             )
@@ -325,7 +325,7 @@ fun Screen09StudioProSuite(
                 .minimumInteractiveComponentSize()
                 .testTag("go_to_stems_button")
         ) {
-            Text("NEXT: #10 4-WAY STEM SEPARATION", style = MaterialTheme.typography.labelLarge)
+            Text("NEXT: #10 FREQUENCY-BAND MIXER", style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -346,8 +346,8 @@ fun Screen10StemSeparation(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         HardwarePanel(
-            title = "#10 // 4-WAY STEM SEPARATION",
-            badge = "STEM_MATRIX_4X",
+            title = "#10 // FREQUENCY-BAND MIXER",
+            badge = "BAND_MIXER_4X",
             accentBorder = true
         ) {
             Row(

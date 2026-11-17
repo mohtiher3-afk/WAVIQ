@@ -10,10 +10,8 @@ import com.example.model.AudioTrackInfo
 import com.example.model.EnhanceProfile
 import com.example.model.MusicGenre
 import com.example.model.TrackDiagnosticReport
-import java.io.ByteArrayOutputStream
-import java.util.Locale
-import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
@@ -32,7 +30,7 @@ data class DecodedAudio(
 object AudioDecoder {
 
     private const val TARGET_SAMPLE_RATE = 48000
-    private const val MAX_SAFE_DECODE_SECONDS = 900 // 15-minute memory-safe limit for full track mastering
+    private const val MAX_DECODE_SECONDS = 3600L // Hard 60-minute upper ceiling; bounded earlier if heap budget tight
 
     fun generateStudioReferenceTrack(): DecodedAudio {
         val sr = TARGET_SAMPLE_RATE
@@ -140,15 +138,25 @@ object AudioDecoder {
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val pcmBytesOut = ByteArrayOutputStream()
-            val maxRawBytes = sourceSampleRate.toLong() * sourceChannels * 2L * MAX_SAFE_DECODE_SECONDS
+            val leftChunks = ArrayList<FloatArray>()
+            val rightChunks = ArrayList<FloatArray>()
+            var decodedFrames = 0L
+
+            // Allocate up to 40% of remaining JVM heap (capped at 60 min) so long tracks decode safely without OOM
+            val runtime = Runtime.getRuntime()
+            val usedHeap = runtime.totalMemory() - runtime.freeMemory()
+            val freeHeapBudget = (runtime.maxMemory() - usedHeap).coerceAtLeast(16L * 1024L * 1024L)
+            val heapMaxFrames = (freeHeapBudget * 40L / 100L) / 8L // stereo Float32 = 8 bytes/frame
+            val durationMaxFrames = sourceSampleRate.toLong().coerceAtLeast(8000L) * MAX_DECODE_SECONDS
+            val maxFramesBudget = minOf(durationMaxFrames, heapMaxFrames.coerceAtLeast(sourceSampleRate.toLong() * 120L))
+
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
             var currentSampleRate = sourceSampleRate
             var currentChannels = sourceChannels
 
-            while (!outputDone && pcmBytesOut.size() < maxRawBytes) {
+            while (!outputDone && decodedFrames < maxFramesBudget) {
                 if (!inputDone) {
                     val inIdx = codec.dequeueInputBuffer(10_000)
                     if (inIdx >= 0) {
@@ -173,11 +181,29 @@ object AudioDecoder {
                     outIdx >= 0 -> {
                         val outBuf = codec.getOutputBuffer(outIdx)
                         if (outBuf != null && bufferInfo.size > 0) {
-                            outBuf.position(bufferInfo.offset)
-                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            val chunk = ByteArray(bufferInfo.size)
-                            outBuf.get(chunk)
-                            pcmBytesOut.write(chunk)
+                            val dup = outBuf.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+                            dup.position(bufferInfo.offset)
+                            dup.limit(bufferInfo.offset + bufferInfo.size)
+                            val channels = currentChannels.coerceAtLeast(1)
+                            val chunkFramesTotal = bufferInfo.size / (2 * channels)
+                            val remainingBudget = (maxFramesBudget - decodedFrames).toInt().coerceAtLeast(0)
+                            val takeFrames = minOf(chunkFramesTotal, remainingBudget)
+                            if (takeFrames > 0) {
+                                val chunkL = FloatArray(takeFrames)
+                                val chunkR = FloatArray(takeFrames)
+                                for (f in 0 until takeFrames) {
+                                    val l = dup.getShort().toFloat() / 32768f
+                                    val r = if (channels >= 2) dup.getShort().toFloat() / 32768f else l
+                                    for (c in 2 until channels) {
+                                        dup.getShort()
+                                    }
+                                    chunkL[f] = l
+                                    chunkR[f] = r
+                                }
+                                leftChunks.add(chunkL)
+                                rightChunks.add(chunkR)
+                                decodedFrames += takeFrames
+                            }
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                         if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -196,31 +222,28 @@ object AudioDecoder {
                 }
             }
 
+            val wasTruncated = !outputDone
             codec.stop()
             codec.release()
 
-            val raw = pcmBytesOut.toByteArray()
-            val shortCount = raw.size / 2
-            val frameCount = (shortCount / currentChannels).coerceAtLeast(1)
+            val frameCount = decodedFrames.toInt().coerceAtLeast(1)
             val srcLeft = FloatArray(frameCount)
             val srcRight = FloatArray(frameCount)
-
-            val bb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
-            for (f in 0 until frameCount) {
-                val l = bb.getShort().toFloat() / 32768f
-                val r = if (currentChannels >= 2) bb.getShort().toFloat() / 32768f else l
-                // Skip extra channels if surround
-                for (c in 2 until currentChannels) {
-                    bb.getShort()
-                }
-                srcLeft[f] = l
-                srcRight[f] = r
+            var writePos = 0
+            for (idx in leftChunks.indices) {
+                val cL = leftChunks[idx]
+                val cR = rightChunks[idx]
+                System.arraycopy(cL, 0, srcLeft, writePos, cL.size)
+                System.arraycopy(cR, 0, srcRight, writePos, cR.size)
+                writePos += cL.size
             }
+            leftChunks.clear()
+            rightChunks.clear()
 
             val (left48, right48) = if (currentSampleRate == TARGET_SAMPLE_RATE) {
                 srcLeft to srcRight
             } else {
-                resampleCubic(srcLeft, srcRight, currentSampleRate, TARGET_SAMPLE_RATE)
+                AudioMeasurement.resampleWithAntiAliasing(srcLeft, srcRight, currentSampleRate, TARGET_SAMPLE_RATE)
             }
 
             val info = analyzeBuffer(
@@ -231,38 +254,15 @@ object AudioDecoder {
                 right = right48,
                 sampleRate = currentSampleRate,
                 channels = currentChannels,
-                isBundled = false
+                isBundled = false,
+                bufferSampleRate = TARGET_SAMPLE_RATE,
+                isDurationTruncated = wasTruncated,
+                context = context
             )
             return DecodedAudio(left48, right48, TARGET_SAMPLE_RATE, info)
         } finally {
             extractor.release()
         }
-    }
-
-    private fun resampleCubic(
-        srcL: FloatArray,
-        srcR: FloatArray,
-        srcSr: Int,
-        dstSr: Int
-    ): Pair<FloatArray, FloatArray> {
-        val ratio = srcSr.toDouble() / dstSr.toDouble()
-        val outLen = ((srcL.size / ratio).toInt()).coerceAtLeast(1)
-        val outL = FloatArray(outLen)
-        val outR = FloatArray(outLen)
-        val last = (srcL.size - 1).coerceAtLeast(0)
-        for (i in 0 until outLen) {
-            val pos = i * ratio
-            val i1 = pos.toInt().coerceIn(0, last)
-            val i0 = (i1 - 1).coerceAtLeast(0)
-            val i2 = (i1 + 1).coerceAtMost(last)
-            val i3 = (i1 + 2).coerceAtMost(last)
-            val t = pos - i1
-            val t2 = t * t
-            val t3 = t2 * t
-            outL[i] = (0.5 * (2.0 * srcL[i1] + (-srcL[i0] + srcL[i2]) * t + (2.0 * srcL[i0] - 5.0 * srcL[i1] + 4.0 * srcL[i2] - srcL[i3]) * t2 + (-srcL[i0] + 3.0 * srcL[i1] - 3.0 * srcL[i2] + srcL[i3]) * t3)).coerceIn(-1.0, 1.0).toFloat()
-            outR[i] = (0.5 * (2.0 * srcR[i1] + (-srcR[i0] + srcR[i2]) * t + (2.0 * srcR[i0] - 5.0 * srcR[i1] + 4.0 * srcR[i2] - srcR[i3]) * t2 + (-srcR[i0] + 3.0 * srcR[i1] - 3.0 * srcR[i2] + srcR[i3]) * t3)).coerceIn(-1.0, 1.0).toFloat()
-        }
-        return outL to outR
     }
 
     fun analyzeBuffer(
@@ -273,134 +273,124 @@ object AudioDecoder {
         right: FloatArray,
         sampleRate: Int,
         channels: Int,
-        isBundled: Boolean
+        isBundled: Boolean,
+        bufferSampleRate: Int = sampleRate,
+        isDurationTruncated: Boolean = false,
+        context: Context? = null
     ): AudioTrackInfo {
         val len = left.size.coerceAtLeast(1)
-        var peak = 1e-6f
-        var sumSq = 0.0
-        var midSq = 0.0
-        var sideSq = 0.0
-        var hfDiff2Sq = 0.0
+        val report = AudioAnalysisService.analyze(
+            context = context,
+            left = left,
+            right = right,
+            sampleRate = bufferSampleRate,
+            channels = channels,
+            titleHint = title
+        )
 
-        val step = max(1, len / 40_000)
-        var count = 0
-        var prevMid = 0f
-        var prevPrevMid = 0f
-        for (i in 0 until len step step) {
-            val l = left[i]
-            val r = right[i]
-            val p = max(abs(l), abs(r))
-            if (p > peak) peak = p
-            sumSq += 0.5 * (l * l + r * r)
-            val m = 0.5 * (l + r)
-            val s = 0.5 * (l - r)
-            midSq += m * m
-            sideSq += s * s
-            val mF = m.toFloat()
-            if (count >= 2 && step == 1) {
-                val d2 = mF - 2f * prevMid + prevPrevMid
-                hfDiff2Sq += (d2 * d2).toDouble()
-            } else if (i >= 2) {
-                val m1 = 0.5f * (left[i - 1] + right[i - 1])
-                val m2 = 0.5f * (left[i - 2] + right[i - 2])
-                val d2 = mF - 2f * m1 + m2
-                hfDiff2Sq += (d2 * d2).toDouble()
-            }
-            prevPrevMid = prevMid
-            prevMid = mF
-            count++
-        }
-
-        val rms = sqrt((sumSq / count.coerceAtLeast(1)).coerceAtLeast(1e-12)).toFloat()
-        val rmsDb = (20f * log10(rms.coerceAtLeast(1e-6f))).coerceIn(-60f, 0f)
-        val peakDb = (20f * log10(peak.coerceAtLeast(1e-6f))).coerceIn(-60f, 0f)
-        val lufs = (rmsDb - 0.7f).coerceIn(-48f, -2f)
-        val dr = (peakDb - rmsDb).coerceIn(1.5f, 24f)
-        val widthPct = ((sideSq / (midSq + sideSq).coerceAtLeast(1e-9)) * 200.0)
-            .toInt().coerceIn(5, 100)
-
-        // Estimate upper-band presence using 2nd-order finite-difference energy vs mid energy
-        val hfRatio = sqrt((hfDiff2Sq / midSq.coerceAtLeast(1e-9)).coerceAtLeast(0.0)).toFloat()
-        val estimatedBandwidthKhz = (9.5f + (hfRatio * 8.2f)).coerceIn(9.5f, 20.0f)
+        val samplePeakDb = report.samplePeakDb
+        val truePeakDb = report.truePeakDb
+        val lufs = report.integratedLufs
+        val dr = report.crestFactorDb
+        val widthPct = report.stereoWidthPct
+        val estimatedBandwidthKhz = report.estimatedBandwidthKhz
         val hfDeficitPct = (((20.0f - estimatedBandwidthKhz) / 10.5f) * 100f)
             .toInt().coerceIn(4, 92)
 
-        val (recordingType, recProfile) = when {
-            channels == 1 || (widthPct <= 10 && hfDeficitPct >= 35) -> "VOCAL / SPEECH" to EnhanceProfile.VOCAL_CLARITY
-            dr >= 17.5f || (dr >= 12.0f && lufs < -20.0f) -> "ACOUSTIC / DYNAMIC" to EnhanceProfile.WARM_ANALOG
-            dr < 6.5f || lufs > -11.5f -> "COMPRESSED / CLUB MIX" to EnhanceProfile.STREAMING_MASTER
-            else -> "FULL STUDIO MIX" to EnhanceProfile.STREAMING_MASTER
+        val (recordingType, _) = when {
+            report.vocalActivity.presencePct >= 58 || channels == 1 || (widthPct <= 10 && hfDeficitPct >= 35) ->
+                "VOCAL / SPEECH" to EnhanceProfile.VOCAL_CLARITY
+            dr >= 17.5f || (dr >= 12.0f && lufs < -20.0f) ->
+                "ACOUSTIC / DYNAMIC" to EnhanceProfile.WARM_ANALOG
+            dr < 6.5f || lufs > -11.5f ->
+                "COMPRESSED / CLUB MIX" to EnhanceProfile.STREAMING_MASTER
+            else ->
+                "FULL STUDIO MIX" to EnhanceProfile.STREAMING_MASTER
         }
 
-        // Fast spectral & transient classification across standard genres (including Drill, Techno, Trap)
+        // Legacy 9-enum compatibility bucket; acoustic evidence always overrides contradictory filenames first
         val (detectedGenre, genreConfidence, genreRationale) = when {
+            channels >= 2 && dr >= 15.0f && lufs < -19.0f -> {
+                Triple(
+                    MusicGenre.CLASSICAL,
+                    94,
+                    "Acoustic estimate: wide ${String.format(Locale.US, "%.1f", dr)}dB crest factor & orchestral headroom"
+                )
+            }
+            channels >= 2 && widthPct >= 50 && lufs >= -18.5f && dr in 6.0f..14.5f && !title.contains("techno", ignoreCase = true) -> {
+                Triple(
+                    MusicGenre.ELECTRONIC,
+                    93,
+                    "Acoustic estimate: wide stereo field (${widthPct}%) & electronic crest density"
+                )
+            }
             title.contains("drill", ignoreCase = true) || title.contains("ukdrill", ignoreCase = true) || title.contains("nydrill", ignoreCase = true) || title.contains("دريل") -> {
                 Triple(
                     MusicGenre.DRILL,
                     94,
-                    "Sliding 808 sub-bass articulation & rapid transient snap"
+                    "Heuristic tag match: drill sub-bass & transient snap profile"
                 )
             }
             title.contains("techno", ignoreCase = true) || title.contains("industrial", ignoreCase = true) || title.contains("rave", ignoreCase = true) || title.contains("تكنو") -> {
                 Triple(
                     MusicGenre.TECHNO,
                     94,
-                    "Hypnotic 4/4 low-end rumble & driving analog saturation"
+                    "Heuristic tag match: 4/4 low-end rumble & harmonic saturation profile"
                 )
             }
             title.contains("trap", ignoreCase = true) || title.contains("808", ignoreCase = true) || title.contains("تراب") -> {
                 Triple(
                     MusicGenre.TRAP,
                     93,
-                    "Heavy 808 harmonic saturation & crisp snare/clap transient pop"
+                    "Heuristic tag match: 808 saturation & crisp top-end transient profile"
                 )
             }
-            title.contains("classic", ignoreCase = true) || title.contains("orchestra", ignoreCase = true) || (channels >= 2 && dr >= 15.0f && lufs < -19.0f) -> {
+            title.contains("classic", ignoreCase = true) || title.contains("orchestra", ignoreCase = true) -> {
                 Triple(
                     MusicGenre.CLASSICAL,
-                    if (dr >= 15.0f) 94 else 88,
-                    "Wide ${String.format(Locale.US, "%.1f", dr)}dB dynamic range & uncompressed acoustic headroom"
+                    88,
+                    "Heuristic estimate: orchestral profile (${String.format(Locale.US, "%.1f", dr)}dB crest)"
                 )
             }
-            title.contains("electronic", ignoreCase = true) || title.contains("edm", ignoreCase = true) || isBundled || (widthPct >= 50 && lufs >= -18.5f && dr in 6.0f..14.5f) -> {
+            title.contains("electronic", ignoreCase = true) || title.contains("edm", ignoreCase = true) || isBundled -> {
                 Triple(
                     MusicGenre.ELECTRONIC,
                     93,
-                    "Wide stereo field & high-energy sub-bass electronic extension"
+                    "Heuristic estimate: wide stereo field (${widthPct}%) & electronic sub energy"
                 )
             }
             title.contains("acoustic", ignoreCase = true) || (dr >= 11.5f && (channels == 1 || (widthPct <= 45 && lufs < -18.0f))) -> {
                 Triple(
                     MusicGenre.ACOUSTIC,
                     91,
-                    "Natural acoustic crest factor & warm harmonic preservation"
+                    "Acoustic estimate: natural crest factor (${String.format(Locale.US, "%.1f", dr)}dB) & moderate stereo spread"
                 )
             }
             title.contains("hiphop", ignoreCase = true) || title.contains("hip_hop", ignoreCase = true) || title.contains("rap", ignoreCase = true) || (dr in 7.0f..12.5f && widthPct in 20..50 && lufs >= -15.5f) -> {
                 Triple(
                     MusicGenre.HIP_HOP,
                     89,
-                    "Punchy low-end transient impact & focused vocal articulation"
+                    "Acoustic estimate: punchy dynamic crest & focused center image"
                 )
             }
             title.contains("rock", ignoreCase = true) || title.contains("metal", ignoreCase = true) || (dr in 5.5f..11.0f && widthPct in 25..55 && hfDeficitPct in 18..60) -> {
                 Triple(
                     MusicGenre.ROCK,
                     88,
-                    "Dense mid-frequency harmonic saturation & driving drum presence"
+                    "Acoustic estimate: dense mid energy & compressed transient crest"
                 )
             }
             else -> {
                 Triple(
                     MusicGenre.POP,
                     86,
-                    "Modern streaming crest (${String.format(Locale.US, "%.1f", dr)}dB DR) & balanced high-frequency presence"
+                    "Heuristic baseline: streaming crest (${String.format(Locale.US, "%.1f", dr)}dB DR)"
                 )
             }
         }
 
         val clarityNeed = when {
-            hfDeficitPct >= 45 || peakDb > -0.5f || lufs < -20f -> "HIGH"
+            hfDeficitPct >= 45 || truePeakDb > -0.5f || lufs < -20f -> "HIGH"
             hfDeficitPct >= 20 || dr < 7.5f -> "MODERATE"
             else -> "LOW"
         }
@@ -413,10 +403,12 @@ object AudioDecoder {
             clarityNeedLabel = clarityNeed,
             recommendedProfile = detectedGenre.recommendedProfile,
             recommendedRestorationAmount = restorationAmt,
-            autoAppliedSummary = "AUTO-GENRE // ${detectedGenre.title} (${detectedGenre.targetKhz}kHz ${detectedGenre.oversampling.label}) + TFLITE GUARD",
+            autoAppliedSummary = "HEURISTIC PRESET // ${report.primaryStyleLabel} (${detectedGenre.targetKhz}kHz ${detectedGenre.oversampling.label})",
             detectedGenre = detectedGenre,
             genreConfidencePct = genreConfidence,
-            genreRationale = genreRationale
+            genreRationale = genreRationale,
+            isHeuristicEstimate = true,
+            analysisReport = report
         )
 
         val bars = 96
@@ -432,7 +424,7 @@ object AudioDecoder {
             maxBar.coerceIn(0.05f, 1f)
         }
 
-        val durationMs = (len.toLong() * 1000L) / TARGET_SAMPLE_RATE
+        val durationMs = (len.toLong() * 1000L) / bufferSampleRate.coerceAtLeast(1)
         return AudioTrackInfo(
             id = id,
             title = title,
@@ -442,11 +434,13 @@ object AudioDecoder {
             durationMs = durationMs,
             bitDepthLabel = "64-BIT DOUBLE DSP",
             integratedLufs = lufs,
-            truePeakDb = peakDb,
+            truePeakDb = truePeakDb,
+            samplePeakDb = samplePeakDb,
             dynamicRangeDb = dr,
             stereoWidthPct = widthPct,
             waveformPeaks = peaks,
             isBundledRef = isBundled,
+            isDurationTruncated = isDurationTruncated,
             diagnostic = diagnostic
         )
     }
