@@ -1,5 +1,7 @@
 # WAVIQ
 
+[![CI](https://github.com/mohtiher3-afk/WAVIQ/actions/workflows/ci.yml/badge.svg)](https://github.com/mohtiher3-afk/WAVIQ/actions/workflows/ci.yml)
+
 WAVIQ is an offline-first Android audio studio for analyzing and mastering tracks on-device. Its current workflow lets you import audio, inspect available analysis, apply local audio-processing profiles, save masters to a local library, and export WAV files.
 
 ## What it does today
@@ -76,6 +78,29 @@ Compare the source and processed audio by listening. A successful build or passi
 - `app/src/main/java/com/example/ui/` — Compose screens, components, and theme.
 - `app/src/test/` — unit and Robolectric tests.
 - `app/src/androidTest/` — device/emulator instrumentation tests.
+- `docs/ai-studio/` — design and audit documents from the project's original scaffold.
+- `.github/` — CI workflow and issue/PR templates.
+
+## Code style
+
+Kotlin style is enforced with ktlint (`ktlint_official`, configured in `.editorconfig`). Check and auto-format with:
+
+```sh
+./gradlew ktlintCheck
+./gradlew ktlintFormat
+```
+
+## Continuous integration
+
+GitHub Actions runs ktlint, the debug build, and the unit tests on JDK 21 for every push to `main` and every pull request. See `.github/workflows/ci.yml`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+WAVIQ is released under the MIT License. See [LICENSE](LICENSE).
 
 ## Notes
 
