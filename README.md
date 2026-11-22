@@ -18,7 +18,7 @@ Audio decoding, processing, and export are designed to run locally. The app does
 
 - Android Studio with Android SDK Platform 36 installed.
 - An Android device or emulator running Android 7.0 (API 24) or newer. `minSdk` is 24; the project targets API 36.
-- A compatible JDK selected as the Gradle JDK in Android Studio. The Gradle Wrapper downloads the project's configured Gradle distribution on first use.
+- JDK 17 or newer for building (Temurin/OpenJDK both work). Running the local unit and Robolectric tests requires JDK 21, because the Robolectric sandbox for Android SDK 36 does not run on older JDKs. Android Studio's Gradle JDK setting controls both; on the command line set `JAVA_HOME` accordingly. The Gradle Wrapper downloads the project's configured Gradle distribution on first use.
 
 ## Open and build
 
@@ -34,9 +34,17 @@ From a terminal, build the debug APK with:
 
 On Windows, use `gradlew.bat :app:assembleDebug`.
 
+The repository includes a standard Android `debug.keystore` (the well-known `androiddebugkey` credentials) so command-line debug builds work out of the box; it signs debug builds only and carries no release-signing value. Android Studio can also regenerate this file automatically if it is missing.
+
+On machines with little RAM, the default Gradle daemon settings (`-Xmx4g`) can be killed by the OS. Use:
+
+```sh
+./gradlew :app:assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx700m" -Dorg.gradle.workers.max=1
+```
+
 ## Tests
 
-Run the local unit and Robolectric tests with:
+Run the local unit and Robolectric tests with JDK 21 (see Requirements):
 
 ```sh
 ./gradlew test
@@ -71,4 +79,4 @@ Compare the source and processed audio by listening. A successful build or passi
 
 ## Notes
 
-The project currently uses a placeholder Android namespace and application ID in `app/build.gradle.kts`. Do not change either as part of a README or build-wrapper update. A release build also needs the signing material and environment variables configured by the project; never commit keystores or signing secrets.
+The project currently uses a placeholder Android namespace and application ID in `app/build.gradle.kts`. Do not change either as part of a README or build-wrapper update. A release build also needs the signing material and environment variables configured by the project; never commit release keystores or signing secrets. The committed `debug.keystore` is the standard public debug certificate and is intentional.
